@@ -1,23 +1,88 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Detect changed files and route tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          set -o pipefail
-          pytest 2>&1 | tee build.log
+          set -e
+
+          if [ -z "$BASE_SHA" ] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "No previous commit found. Running all tests."
+            pytest 2>&1 | tee build.log
+            exit 0
+          fi
+
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          RUN_ALL=false
+          RUN_PRICING=false
+          RUN_CART=false
+          RUN_INVENTORY=false
+
+          while IFS= read -r file; do
+            case "$file" in
+              src/pricing.py|tests/test_pricing.py)
+                RUN_PRICING=true ;;
+              src/cart.py|tests/test_cart.py)
+                RUN_CART=true ;;
+              src/inventory.py|tests/test_inventory.py)
+                RUN_INVENTORY=true ;;
+              requirements.txt|pytest.ini|.github/workflows/*)
+                RUN_ALL=true ;;
+              *)
+                RUN_ALL=true ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          if [ "$RUN_ALL" = true ]; then
+            echo "Running all tests."
+            pytest 2>&1 | tee build.log
+          else
+            TESTS=()
+
+            if [ "$RUN_PRICING" = true ]; then
+              TESTS+=(tests/test_pricing.py)
+            fi
+
+            if [ "$RUN_CART" = true ]; then
+              TESTS+=(tests/test_cart.py)
+            fi
+
+            if [ "$RUN_INVENTORY" = true ]; then
+              TESTS+=(tests/test_inventory.py)
+            fi
+
+            if [ ${#TESTS[@]} -eq 0 ]; then
+              echo "No specific test subset identified. Running all tests."
+              pytest 2>&1 | tee build.log
+            else
+              echo "Running selected tests: ${TESTS[*]}"
+              pytest "${TESTS[@]}" 2>&1 | tee build.log
+            fi
+          fi
