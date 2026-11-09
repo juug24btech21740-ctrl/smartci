@@ -1,1 +1,4 @@
 pytest
+requests
+pandas
+scikit-learn
